@@ -1,0 +1,169 @@
+# YieldWin — No-Loss Lottery Protocol
+
+> **Win prizes. Never lose principal.**  
+> Your USDC earns yield through Ondo RWA (USDY). When the pot reaches $2,000, Chainlink VRF randomly selects 5 winners. You can always withdraw 100% of your deposit.
+
+---
+
+## Architecture Overview
+
+```
+User deposits USDC
+       │
+       ▼
+YieldWinVault (ERC-4626)
+       │  mints 1 YWT ticket per 1 USDC
+       │  converts USDC → USDY (Ondo Finance)
+       ▼
+USDY accrues yield daily via RWADynamicRateOracle
+       │
+       ▼
+Chainlink Automation monitors: yield ≥ $2,000?
+       │  yes → calls performUpkeep()
+       ▼
+Chainlink VRF v2.5 → fulfillRandomWords()
+       │  LotteryLogic.selectWinners() → 5 unique winners
+       ▼
+Prize Distribution (80/10/10):
+  • Grand winner:    60% of yield
+  • 4 small winners: 5% each (20% total)
+  • LP rewards:      10%
+  • Treasury:        10%
+```
+
+## Prize Distribution
+
+| Recipient       | Share  |
+|-----------------|--------|
+| Grand Winner    | 60%    |
+| Small Winner ×4 | 5% each |
+| LP Rewards      | 10%    |
+| Treasury        | 10%    |
+
+---
+
+## Smart Contracts
+
+| Contract           | Description |
+|--------------------|-------------|
+| `YieldWinVault.sol` | Main ERC-4626 vault, deposit/withdraw, draw trigger |
+| `LotteryLogic.sol` | Library: 5-winner selection from single VRF seed |
+| `mocks/MockContracts.sol` | MockUSDC, MockUSDY, MockUSDYOracle for testnet |
+| `interfaces/IUSDYOracle.sol` | Ondo oracle interface |
+
+### Security Features
+
+- **Checks-Effects-Interactions** on all withdraw/redeem paths
+- **48h lock-up**: deposits ineligible for draw and early-exit fee applies
+- **Non-transferable tickets**: ERC-4626 shares are soulbound
+- **Slippage protection**: 0.5% max slippage on USDC→USDY conversion
+- **VRF uniqueness**: LotteryLogic guarantees 5 unique, non-zero winners
+- **Pausable**: owner can pause in case of emergency
+- **ReentrancyGuard**: on all external write functions
+
+---
+
+## Setup
+
+### Prerequisites
+
+- [Foundry](https://getfoundry.sh/) installed
+- Node.js 18+
+- Chainlink VRF v2.5 subscription on Arbitrum Sepolia
+
+### 1. Install Foundry dependencies
+
+```bash
+forge install OpenZeppelin/openzeppelin-contracts@v5.0.0
+forge install smartcontractkit/chainlink-brownie-contracts
+forge install foundry-rs/forge-std
+```
+
+### 2. Environment variables
+
+```bash
+cp .env.example .env
+```
+
+```env
+PRIVATE_KEY=0x...
+ARB_SEPOLIA_RPC=https://sepolia-rollup.arbitrum.io/rpc
+ARBISCAN_API_KEY=...
+VRF_SUBSCRIPTION_ID=...
+LP_REWARD_ADDRESS=0x...
+TREASURY_ADDRESS=0x...
+USE_MOCKS=true
+```
+
+### 3. Deploy (testnet with mocks)
+
+```bash
+forge script script/DeployYieldWin.s.sol \
+  --rpc-url $ARB_SEPOLIA_RPC \
+  --broadcast \
+  --verify \
+  -vvvv
+```
+
+### 4. Post-deploy Chainlink setup
+
+1. **VRF Subscription**: Go to [vrf.chain.link](https://vrf.chain.link), open your subscription, add the vault address as a consumer, and fund with LINK.
+
+2. **Automation**: Go to [automation.chain.link](https://automation.chain.link), register a new upkeep:
+   - Type: **Custom Logic**
+   - Address: `<VAULT_ADDRESS>`
+   - Fund with LINK
+
+### 5. Test the draw (using mocks)
+
+```bash
+# Mint test USDC to a few wallets
+cast send $MOCK_USDC "mint(address,uint256)" $USER1 10000000000 --rpc-url $ARB_SEPOLIA_RPC --private-key $PRIVATE_KEY
+
+# Simulate 30 days of yield accrual on oracle
+cast send $MOCK_ORACLE "simulateDays(uint256)" 30 --rpc-url $ARB_SEPOLIA_RPC --private-key $PRIVATE_KEY
+
+# Check if draw is needed
+cast call $VAULT "checkUpkeep(bytes)" "0x" --rpc-url $ARB_SEPOLIA_RPC
+```
+
+---
+
+## Frontend
+
+```bash
+cd frontend
+npm install
+cp .env.local.example .env.local
+# Set NEXT_PUBLIC_VAULT_ADDRESS, NEXT_PUBLIC_USDC_ADDRESS, NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000)
+
+### Components
+
+| Component | Description |
+|-----------|-------------|
+| `Dashboard.tsx` | TVL, jackpot meter, draw progress, user position |
+| `Actions.tsx` | Approve → Deposit and Withdraw flows |
+| `WinnerList.tsx` | Historical draws with winner addresses and prizes |
+
+---
+
+## Production Checklist
+
+- [ ] Replace mock contracts with real Ondo USDY + oracle addresses
+- [ ] Implement `_getEligibleParticipants()` using an `EnumerableSet` or off-chain indexer
+- [ ] Security audit (especially ERC-4626 share accounting)
+- [ ] VRF subscription funded with sufficient LINK
+- [ ] Automation upkeep funded with LINK
+- [ ] Multisig for owner/admin functions
+- [ ] Slippage parameter configurable by owner
+- [ ] Emergency withdrawal mechanism
+
+---
+
+## License
+
+MIT
